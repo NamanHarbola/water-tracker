@@ -13,6 +13,13 @@ free tier + a free static host (Vercel/Netlify).
    `supabase/migration_02_profile.sql`, and run it too — this adds
    the name/avatar fields and the avatars storage bucket used by the
    profile screen.
+3b. Run `supabase/migration_03_food_and_admin_delete.sql`, then
+   `supabase/migration_04_goals_and_push.sql` (adds editable water
+   goals + the push-subscriptions table). Run
+   `supabase/migration_05_cron.sql` too if you want real background
+   push notifications — see "Real push notifications" below for the
+   full setup, it needs one more step (deploying an edge function)
+   before that migration will do anything.
 4. Go to **Project Settings → API** (or **Settings → Data API** /
    **Settings → API Keys** depending on your project's dashboard
    version) and copy the **Project URL** and **anon/publishable
@@ -79,21 +86,89 @@ user being tracked — it'll default to the regular tracker view.
   This step is required on iOS — web push notifications do not work
   in a normal Safari tab, only in an installed PWA.
 
-## How the schedule/alarm actually works right now
+## Editable per-user water goals
 
-The default schedule is hourly, 9am–9pm (edit `DEFAULT_HOURS` in
-`src/components/Dashboard.jsx` to change it). While the app/PWA is
-open or backgrounded, it checks once a minute and fires a local
-notification when a slot's time arrives and hasn't been logged yet.
+Each user sets their own schedule from the Profile screen — no more
+fixed 9am–9pm hourly grid for everyone. Three numbers, saved to their
+`profiles` row (`water_start_hour`, `water_end_hour`,
+`water_slot_count`): a start hour, an end hour, and how many reminders
+to spread evenly across that window (1–24). `src/lib/schedule.js`
+turns those three numbers into the day's actual slot times, rounded
+to the nearest 15 minutes. There's also a per-user calorie goal
+(`calorie_goal`) next to it in the same form.
 
-**Limitation to know about:** this only fires while the browser/PWA
-process is alive somewhere (open tab, or backgrounded PWA on
-Android). It will *not* wake up a fully closed app. For guaranteed
-reminders even when closed, you'd need real server-sent push — a free
-option is wiring in OneSignal's free tier, which needs a small
-Supabase Edge Function (or any free cron, e.g. a GitHub Action) to
-ping it hourly. That's a reasonable v2 step once the core flow is
-working; happy to build that out when you're ready.
+## Weekly/monthly charts
+
+The Profile screen's "History" section now has three views: **List**
+(the original day-by-day rows), **Weekly** (last 7 days), and
+**Monthly** (last 30 days) — each as a small bar chart for water
+breaks and one for calories, with a dashed goal line. These are
+hand-rolled SVG (`src/components/WaterChart.jsx`), not a charting
+library, so there's no new npm dependency to install.
+
+## Admin calendar JPEG export
+
+From the admin **Overview** tab, tap the 📅 button on any user to open
+a month picker. It draws a calendar grid on an HTML canvas — 💧 plus
+that day's water-break count, 🔥 plus that day's total calories — and
+lets you preview it before downloading it as a JPEG
+(`src/components/CalendarExport.jsx`). No server round-trip beyond
+the normal Supabase queries; the image is generated entirely in the
+browser.
+
+## Real push notifications (background, even when the app is closed)
+
+While the app/PWA is open or backgrounded, `useReminders.js` polls
+every 20s and fires a local notification when a slot goes overdue —
+that part hasn't changed. But a closed app can't run JavaScript, so
+that local check alone can't wake it back up. Real background push
+needs a server to send the notification *to* the closed app, which is
+what this adds — using nothing but free tiers:
+
+- **Web Push** (the browser's own `PushManager` API) instead of a
+  paid vendor like OneSignal — no third-party account, no per-message
+  cost.
+- A **Supabase Edge Function** (`supabase/functions/send-reminders`)
+  that checks every user's schedule and sends a push to anyone with a
+  due, unlogged slot.
+- **pg_cron + pg_net** (both included free on every Supabase project,
+  including the free tier) to call that function every 15 minutes —
+  no separate cron server needed.
+
+Setup, one time:
+
+1. **Generate VAPID keys** (these are yours — nothing to sign up
+   for): `npx web-push generate-vapid-keys`. You'll get a public and
+   a private key.
+2. **Frontend:** add the public key to `.env` as
+   `VITE_VAPID_PUBLIC_KEY=...` (and in your host's env vars if
+   deployed), then redeploy/rebuild.
+3. **Backend secrets:** with the [Supabase CLI](https://supabase.com/docs/guides/cli)
+   linked to your project, run:
+   ```bash
+   supabase secrets set VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=... VAPID_SUBJECT=mailto:you@example.com
+   supabase secrets set SB_SERVICE_ROLE_KEY=...   # Project Settings -> API -> service_role key
+   ```
+4. **Deploy the function:**
+   ```bash
+   supabase functions deploy send-reminders
+   ```
+5. **Schedule it:** open `supabase/migration_05_cron.sql`, fill in
+   your project ref and anon key, and run it in the SQL editor.
+6. **Turn it on per user:** in the app, Profile → "Push
+   notifications" → Enable. Each device that enables it gets its own
+   row in `push_subscriptions` and its own notifications.
+
+Each user's local timezone (`profiles.timezone`, an IANA name like
+`Asia/Kolkata`, defaulting to that) is what the edge function uses to
+work out when their slots are actually due — there's no UI for
+changing it yet, so update it directly in the `profiles` table if a
+user is somewhere else.
+
+**Limitation to know about:** iOS requires the site to be installed
+as a home-screen PWA before push permission can even be requested —
+a plain Safari tab can't do background push at all. Android Chrome
+works from either a normal tab or an installed PWA.
 
 ## Verification is manual by design
 
@@ -106,30 +181,41 @@ that can be layered on without changing this core flow.
 
 ## Calorie tracking
 
-Simple manual log for now — quick-add buttons (100/250/400/600 kcal)
-plus a custom amount field, with a daily total against a 2000 kcal
-default goal (change `goal` prop on `<CalorieTracker />` in
-`Dashboard.jsx`).
+Simple manual log — quick-add buttons (100/250/400/600 kcal) plus a
+custom amount field or the Indian-food search, with a daily total
+against each user's own calorie goal (set from Profile → "Your goal",
+defaults to 2000 kcal).
 
 ## Project structure
 
 ```
 src/
   components/
-    WaterTank.jsx        the animated fill/wave progress visual
+    WaterTank.jsx         the animated fill/wave progress visual
     TrackWaterModal.jsx   camera capture + upload flow
     CalorieTracker.jsx    daily calorie log widget
+    WaterChart.jsx         dependency-free SVG bar chart (weekly/monthly)
+    CalendarExport.jsx     admin canvas -> JPEG calendar export
     Dashboard.jsx          main screen for a regular user
-    Profile.jsx             avatar/name, streak, 14-day history
+    Profile.jsx             avatar/name, streak, goal settings, charts, push toggle
     Avatar.jsx               photo-or-initials avatar, shared
-    AdminPanel.jsx           Overview (per-user stats) + Clips (review), role = admin
+    AdminPanel.jsx           Overview (per-user stats + export) + Clips (review), role = admin
     Login.jsx               email/password auth
-  useReminders.js          hourly notification polling
+  lib/
+    date.js                 local-time date helpers
+    schedule.js              builds a day's slots from a user's goal settings
+    push.js                  Web Push subscribe/unsubscribe helpers
+    indianFoodDb.js           calorie lookup data
+  useReminders.js          in-app (foreground/backgrounded) notification polling
   supabaseClient.js
 supabase/
-  schema.sql                run once in Supabase's SQL editor
-  migration_02_profile.sql  run second — adds name/avatar + avatars bucket
-public/manifest.json, sw.js  PWA install + notification plumbing
+  schema.sql                          run once in Supabase's SQL editor
+  migration_02_profile.sql            adds name/avatar + avatars bucket
+  migration_03_food_and_admin_delete.sql
+  migration_04_goals_and_push.sql     adds editable goals + push_subscriptions table
+  migration_05_cron.sql               schedules the send-reminders function (fill in project ref + anon key first)
+  functions/send-reminders/index.ts   edge function that sends real Web Push
+public/manifest.json, sw.js  PWA install + local + push notification plumbing
 ```
 
 ## Design
@@ -145,13 +231,26 @@ live in `tailwind.config.js` if you want to nudge the palette.
 
 Tap the avatar in the top-right of the dashboard. Users can upload a
 photo (falls back to colored initials if they don't), set a display
-name, and see a streak counter plus their last 14 days of water +
-calorie activity.
+name, and see a streak counter. Below that: an editable water/calorie
+goal form, a push-notification toggle, and a History section with
+List/Weekly/Monthly views of their water + calorie activity.
 
 ## Admin panel
 
-Two tabs now:
+Two tabs:
 - **Overview** — every tracked user with today's water count and
-  calorie total at a glance.
+  calorie total at a glance, plus a 📅 button to export that user's
+  monthly calendar as a JPEG.
 - **Clips** — the original clip-by-clip video review, with a badge
   showing how many are still unreviewed.
+
+## Cost
+
+Everything here runs on free tiers: Supabase's free project tier
+(database, auth, storage, edge functions, pg_cron all included),
+a free static host (Vercel/Netlify), the browser's own Web Push API
+(no OneSignal or similar paid vendor), and no new npm packages were
+added for the charts or the calendar export — both are hand-rolled
+(SVG and Canvas respectively) to avoid extra dependencies. The only
+thing worth watching as usage grows is Supabase's free-tier storage
+and bandwidth caps for the video clips.

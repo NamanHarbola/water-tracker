@@ -5,39 +5,36 @@ import TrackWaterModal from './TrackWaterModal'
 import CalorieTracker from './CalorieTracker'
 import Avatar from './Avatar'
 import useReminders from '../useReminders'
-import { localDateKey, localHourDate, startOfLocalDay } from '../lib/date'
-
-const DEFAULT_HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] // 9am–9pm hourly
-
-function buildSlots(hours, now) {
-  const dateKey = localDateKey(now)
-  return hours.map((h) => {
-    const slotTime = localHourDate(now, h)
-    return {
-      id: `${dateKey}-${h}`,
-      hour: h,
-      time: slotTime,
-      isPast: slotTime <= now
-    }
-  })
-}
+import { localDateKey, startOfLocalDay } from '../lib/date'
+import { buildWaterSlots, formatSlotTime, DEFAULT_GOAL } from '../lib/schedule'
 
 export default function Dashboard({ session, onOpenProfile }) {
   const userId = session.user.id
-  const hours = DEFAULT_HOURS
 
   // `now` ticks forward periodically so slots correctly flip to "past due"
   // as the day goes on, and so we notice when local midnight rolls over
   // instead of freezing "today" at whatever it was on page load.
   const [now, setNow] = useState(() => new Date())
   const dateKey = localDateKey(now)
-  const slots = useMemo(() => buildSlots(hours, now), [dateKey, now])
 
   const [profile, setProfile] = useState(null)
   const [logs, setLogs] = useState([])
   const [calorieEntries, setCalorieEntries] = useState([])
   const [activeSlot, setActiveSlot] = useState(null)
   const [loading, setLoading] = useState(true)
+
+  const goal = profile
+    ? {
+        startHour: profile.water_start_hour,
+        endHour: profile.water_end_hour,
+        slotCount: profile.water_slot_count
+      }
+    : DEFAULT_GOAL
+
+  const slots = useMemo(
+    () => buildWaterSlots(goal, now),
+    [dateKey, now, goal.startHour, goal.endHour, goal.slotCount]
+  )
 
   useEffect(() => {
     const tick = setInterval(() => setNow(new Date()), 30 * 1000)
@@ -55,7 +52,7 @@ export default function Dashboard({ session, onOpenProfile }) {
 
     const { data: profileData } = await supabase
       .from('profiles')
-      .select('full_name, avatar_url')
+      .select('full_name, avatar_url, water_start_hour, water_end_hour, water_slot_count, calorie_goal')
       .eq('id', userId)
       .single()
 
@@ -80,8 +77,8 @@ export default function Dashboard({ session, onOpenProfile }) {
   const doneSlotIds = new Set(logs.map((l) => l.slot_id))
   useReminders(slots, doneSlotIds)
   const doneCount = slots.filter((s) => doneSlotIds.has(s.id)).length
-  const percent = (doneCount / slots.length) * 100
-  const allDone = doneCount === slots.length
+  const percent = slots.length ? (doneCount / slots.length) * 100 : 0
+  const allDone = slots.length > 0 && doneCount === slots.length
 
   const nextSlot =
     slots.find((s) => s.isPast && !doneSlotIds.has(s.id)) ||
@@ -121,7 +118,12 @@ export default function Dashboard({ session, onOpenProfile }) {
           </button>
 
           <section>
-            <h2 className="font-display text-lg text-deep mb-3">Today's slots</h2>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-display text-lg text-deep">Today's slots</h2>
+              <button onClick={onOpenProfile} className="text-xs text-splash font-semibold press-pop">
+                Edit goal
+              </button>
+            </div>
             <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
               {slots.map((s) => {
                 const done = doneSlotIds.has(s.id)
@@ -137,8 +139,7 @@ export default function Dashboard({ session, onOpenProfile }) {
                         : 'bg-white border-bubble text-ink/40'
                     }`}
                   >
-                    {s.hour % 12 || 12}
-                    {s.hour < 12 ? 'am' : 'pm'} {done ? '✓' : ''}
+                    {formatSlotTime(s.hour, s.minute)} {done ? '✓' : ''}
                   </div>
                 )
               })}
@@ -149,6 +150,7 @@ export default function Dashboard({ session, onOpenProfile }) {
             userId={userId}
             entries={calorieEntries}
             onAdd={(entry) => setCalorieEntries((prev) => [...prev, entry])}
+            goal={profile?.calorie_goal || 2000}
           />
         </main>
       </div>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import Avatar from './Avatar'
+import CalendarExport from './CalendarExport'
 import { localDateKey, startOfLocalDay } from '../lib/date'
 
 export default function AdminPanel({ onSignOut }) {
@@ -16,6 +17,7 @@ export default function AdminPanel({ onSignOut }) {
   const [selectedUserId, setSelectedUserId] = useState(null) // null = all users
   const [statusFilter, setStatusFilter] = useState('all') // all | unreviewed | reviewed
   const [deletingId, setDeletingId] = useState(null)
+  const [exportUser, setExportUser] = useState(null) // user object, or null when modal closed
 
   useEffect(() => {
     load()
@@ -205,24 +207,31 @@ export default function AdminPanel({ onSignOut }) {
                 .reduce((sum, c) => sum + c.calories, 0)
 
               return (
-                <button
+                <div
                   key={u.id}
-                  onClick={() => openUserClips(u.id)}
-                  className="w-full text-left bg-white rounded-blob p-4 shadow-sm border border-deep/5 flex items-center gap-4 press-pop"
+                  className="w-full text-left bg-white rounded-blob p-4 shadow-sm border border-deep/5 flex items-center gap-4"
                 >
-                  <Avatar url={u.avatar_url} name={u.full_name} email={u.email} size={52} />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-display text-deep truncate">{u.full_name || u.email}</p>
-                    <div className="flex gap-3 mt-1 text-xs tabular flex-wrap">
-                      <span className="text-splash">💧 {userLogsToday.length} today</span>
-                      <span className="text-sun">🔥 {userCalToday} kcal</span>
-                      {userUnreviewed > 0 && (
-                        <span className="text-coral font-semibold">{userUnreviewed} to review</span>
-                      )}
+                  <button onClick={() => openUserClips(u.id)} className="flex items-center gap-4 flex-1 min-w-0 press-pop">
+                    <Avatar url={u.avatar_url} name={u.full_name} email={u.email} size={52} />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-display text-deep truncate">{u.full_name || u.email}</p>
+                      <div className="flex gap-3 mt-1 text-xs tabular flex-wrap">
+                        <span className="text-splash">💧 {userLogsToday.length} today</span>
+                        <span className="text-sun">🔥 {userCalToday} kcal</span>
+                        {userUnreviewed > 0 && (
+                          <span className="text-coral font-semibold">{userUnreviewed} to review</span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  <span className="text-ink/20 text-xl">›</span>
-                </button>
+                  </button>
+                  <button
+                    onClick={() => setExportUser(u)}
+                    title="Export monthly calendar JPEG"
+                    className="shrink-0 w-9 h-9 rounded-full bg-bubble text-deep flex items-center justify-center press-pop"
+                  >
+                    📅
+                  </button>
+                </div>
               )
             })}
           </main>
@@ -340,6 +349,8 @@ export default function AdminPanel({ onSignOut }) {
           </main>
         )}
       </div>
+
+      {exportUser && <CalendarExport user={exportUser} onClose={() => setExportUser(null)} />}
     </div>
   )
 }
