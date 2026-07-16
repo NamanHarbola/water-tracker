@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body {
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: 'Nunito', sans-serif;
+  color: #1B2A4A;
+}
+
+.font-display {
+  font-family: 'Fredoka', sans-serif;
+}
+
+.tabular {
+  font-family: 'Space Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Signature element: the tank. Two offset sine-wave layers scroll
+   horizontally to feel alive without being showy. */
+.tank-wave {
+  background-repeat: repeat-x;
+  background-size: 50% 100%;
+}
+
+/* Decorative floating bubbles used as ambient background texture */
+.deco-bubble {
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+  opacity: 0.35;
+}
+
+.press-pop:active {
+  transform: scale(0.94);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-wave, .animate-wave-slow, .animate-float, .animate-float-delay, .animate-pop, .animate-wiggle {
+    animation: none !important;
+  }
+}
+
+:focus-visible {
+  outline: 3px solid #00C2FF;
+  outline-offset: 2px;
+}
