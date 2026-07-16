@@ -1,20 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import Avatar from './Avatar'
-
-function dateKey(iso) {
-  return iso.slice(0, 10)
-}
+import { localDateKey, isoToLocalDateKey } from '../lib/date'
 
 function computeStreak(dateKeysWithLogs) {
   const set = new Set(dateKeysWithLogs)
   let streak = 0
   let cursor = new Date()
   // if today has no logs yet, start counting from yesterday instead
-  if (!set.has(cursor.toISOString().slice(0, 10))) {
+  if (!set.has(localDateKey(cursor))) {
     cursor.setDate(cursor.getDate() - 1)
   }
-  while (set.has(cursor.toISOString().slice(0, 10))) {
+  while (set.has(localDateKey(cursor))) {
     streak += 1
     cursor.setDate(cursor.getDate() - 1)
   }
@@ -65,12 +62,12 @@ export default function Profile({ session, onBack, onSignOut }) {
 
     const byDate = {}
     for (const l of logData || []) {
-      const k = dateKey(l.uploaded_at)
+      const k = isoToLocalDateKey(l.uploaded_at)
       byDate[k] = byDate[k] || { date: k, waterCount: 0, calories: 0 }
       byDate[k].waterCount += 1
     }
     for (const c of calData || []) {
-      const k = dateKey(c.logged_at)
+      const k = isoToLocalDateKey(c.logged_at)
       byDate[k] = byDate[k] || { date: k, waterCount: 0, calories: 0 }
       byDate[k].calories += c.calories
     }
@@ -116,14 +113,18 @@ export default function Profile({ session, onBack, onSignOut }) {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-bubble to-white pb-12">
-      <header className="flex items-center gap-3 px-5 pt-6 pb-2">
-        <button onClick={onBack} className="text-2xl leading-none text-deep press-pop">
+      <div className="max-w-md mx-auto">
+      <header
+        className="flex items-center gap-3 px-4 sm:px-5 pb-2"
+        style={{ paddingTop: 'max(1.5rem, env(safe-area-inset-top))' }}
+      >
+        <button onClick={onBack} className="text-2xl leading-none text-deep press-pop p-1 -ml-1">
           ←
         </button>
         <h1 className="font-display text-xl text-deep">Your profile</h1>
       </header>
 
-      <main className="px-5 space-y-6 mt-4">
+      <main className="px-4 sm:px-5 space-y-6 mt-4">
         <div className="bg-white rounded-blob p-6 shadow-sm border border-deep/5 flex flex-col items-center gap-3 relative overflow-hidden">
           <div className="deco-bubble w-10 h-10 bg-sun -top-3 -right-3 animate-float" />
           <button
@@ -172,11 +173,14 @@ export default function Profile({ session, onBack, onSignOut }) {
                 className="bg-white rounded-2xl px-4 py-3 flex items-center justify-between border border-deep/5"
               >
                 <span className="text-sm font-medium text-deep">
-                  {new Date(day.date).toLocaleDateString(undefined, {
-                    weekday: 'short',
-                    day: 'numeric',
-                    month: 'short'
-                  })}
+                  {(() => {
+                    const [y, m, d] = day.date.split('-').map(Number)
+                    return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+                      weekday: 'short',
+                      day: 'numeric',
+                      month: 'short'
+                    })
+                  })()}
                 </span>
                 <div className="flex items-center gap-3 text-xs tabular">
                   <span className="flex items-center gap-1 text-splash">
@@ -195,6 +199,7 @@ export default function Profile({ session, onBack, onSignOut }) {
           Sign out
         </button>
       </main>
+      </div>
     </div>
   )
 }

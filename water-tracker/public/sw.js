@@ -11,7 +11,12 @@ self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()))
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SHOW_REMINDER') {
-    self.registration.showNotification('Time to drink water 💧', {
+    const hour = event.data.hour
+    const label =
+      typeof hour === 'number'
+        ? `${hour % 12 || 12}${hour < 12 ? 'am' : 'pm'} water break`
+        : 'Time to drink water 💧'
+    self.registration.showNotification(label, {
       body: 'Tap to log your break before the next slot.',
       icon: '/icon-192.png',
       tag: 'water-reminder',
