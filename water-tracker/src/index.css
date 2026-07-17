@@ -40,11 +40,6 @@ body {
   transform: scale(0.94);
 }
 
-/* Safe-area aware spacing for notched phones (iPhone home indicator, etc.) */
-.pb-safe {
-  padding-bottom: max(3rem, env(safe-area-inset-bottom));
-}
-
 @media (prefers-reduced-motion: reduce) {
   .animate-wave, .animate-wave-slow, .animate-float, .animate-float-delay, .animate-pop, .animate-wiggle {
     animation: none !important;

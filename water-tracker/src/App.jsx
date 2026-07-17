@@ -30,6 +30,22 @@ export default function App() {
     return () => sub.subscription.unsubscribe()
   }, [])
 
+  useEffect(() => {
+    if (!session) return
+    window.OneSignalDeferred = window.OneSignalDeferred || []
+    window.OneSignalDeferred.push(async (OneSignal) => {
+      try {
+        await OneSignal.login(session.user.id)
+        const permission = OneSignal.Notifications.permission
+        if (permission !== true) {
+          await OneSignal.Notifications.requestPermission()
+        }
+      } catch (err) {
+        console.warn('OneSignal setup skipped:', err)
+      }
+    })
+  }, [session])
+
   async function loadRole(userId) {
     // Ensures a profile row exists, then reads its role.
     const { data } = await supabase.from('profiles').select('role').eq('id', userId).single()
