@@ -1,21 +1,25 @@
-// OneSignal handles real server-push delivery; this line lets the same
-// service worker file (below) also serve our own local reminder logic.
+// OneSignal's own worker script handles real background push delivery
+// (see index.html for SDK init) — this import lets it register its
+// listeners inside the same service worker file the site already needs
+// for PWA install support.
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDKWorker.js')
 
-// Minimal service worker. Two responsibilities:
-// 1. Lets the site be installed as a PWA (required for iOS home-screen notifications).
-// 2. Shows a local notification when the page tells it to via postMessage.
-//    This covers reminders while the tab is open/backgrounded. For reminders
-//    that must fire even when the app is fully closed, see the README section
-//    on server-side push (e.g. via a free OneSignal plan) — that requires a
-//    small backend cron job, which a pure static site can't do on its own.
+// Beyond OneSignal, this service worker has one more job: showing a local
+// notification when the page tells it to via postMessage. That covers
+// reminders while the tab is open/backgrounded (see src/useReminders.js) —
+// OneSignal is only needed for the "app is fully closed" case.
 
 self.addEventListener('install', () => self.skipWaiting())
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()))
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SHOW_REMINDER') {
-    self.registration.showNotification('Time to drink water 💧', {
+    const hour = event.data.hour
+    const label =
+      typeof hour === 'number'
+        ? `${hour % 12 || 12}${hour < 12 ? 'am' : 'pm'} water break`
+        : 'Time to drink water 💧'
+    self.registration.showNotification(label, {
       body: 'Tap to log your break before the next slot.',
       icon: '/icon-192.png',
       tag: 'water-reminder',
@@ -28,7 +32,9 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close()
   event.waitUntil(
     self.clients.matchAll({ type: 'window' }).then((clientList) => {
-      if (clientList.length > 0) return clientList[0].focus()
+      for (const client of clientList) {
+        if ('focus' in client) return client.focus()
+      }
       return self.clients.openWindow('/')
     })
   )

@@ -13,6 +13,10 @@ free tier + a free static host (Vercel/Netlify).
    `supabase/migration_02_profile.sql`, and run it too — this adds
    the name/avatar fields and the avatars storage bucket used by the
    profile screen.
+3b. Run `supabase/migration_03_food_and_admin_delete.sql`, then
+   `supabase/migration_04_goals.sql` (adds editable water goals). Real
+   push notifications need one more setup step outside the
+   database — see "Real push notifications" below.
 4. Go to **Project Settings → API** (or **Settings → Data API** /
    **Settings → API Keys** depending on your project's dashboard
    version) and copy the **Project URL** and **anon/publishable
@@ -62,14 +66,16 @@ user being tracked — it'll default to the regular tracker view.
 **Vercel** (recommended, simplest):
 1. Push this folder to a GitHub repo.
 2. Go to vercel.com → New Project → import the repo.
-3. Framework preset: Vite. Add the two env vars
-   (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`) in the project
-   settings.
+3. Framework preset: Vite. Add the env vars (`VITE_SUPABASE_URL`,
+   `VITE_SUPABASE_ANON_KEY`, and `VITE_ONESIGNAL_APP_ID` if you're
+   using push notifications) in the project settings.
 4. Deploy. You'll get a free `*.vercel.app` HTTPS URL — camera and
    notifications need HTTPS, so this matters.
 
-**Netlify** works the same way (`npm run build`, publish directory
-`dist`).
+**Netlify** works the same way — `netlify.toml` in this repo already
+has the build command (`npm run build`) and publish directory
+(`dist`) set up, plus the redirect rule a single-page app needs. Add
+the same env vars in Site settings → Environment variables.
 
 ## 5. Install it as an app on the phone
 
@@ -79,112 +85,103 @@ user being tracked — it'll default to the regular tracker view.
   This step is required on iOS — web push notifications do not work
   in a normal Safari tab, only in an installed PWA.
 
-## How the schedule/alarm actually works right now
+## Editable per-user water goals
 
-The default schedule is hourly, 9am–9pm (edit `DEFAULT_HOURS` in
-`src/components/Dashboard.jsx` to change it). While the app/PWA is
-open or backgrounded, it checks once a minute and fires a local
-notification when a slot's time arrives and hasn't been logged yet.
+Each user sets their own schedule from the Profile screen — no more
+fixed 9am–9pm hourly grid for everyone. Three numbers, saved to their
+`profiles` row (`water_start_hour`, `water_end_hour`,
+`water_slot_count`): a start hour, an end hour, and how many reminders
+to spread evenly across that window (1–24). `src/lib/schedule.js`
+turns those three numbers into the day's actual slot times, rounded
+to the nearest 15 minutes. There's also a per-user calorie goal
+(`calorie_goal`) next to it in the same form.
 
-## Real push notifications (work even when the app is fully closed)
+## Weekly/monthly charts
 
-The in-app reminder (`useReminders.js`) only fires while the app is open
-or backgrounded. For reminders that arrive no matter what — app closed,
-phone locked — this project uses **OneSignal** (free push delivery) plus
-a **GitHub Actions cron job** (free scheduled server) that checks every
-hour who hasn't logged their water break yet and pushes them a
-notification directly.
+The Profile screen's "History" section now has three views: **List**
+(the original day-by-day rows), **Weekly** (last 7 days), and
+**Monthly** (last 30 days) — each as a small bar chart for water
+breaks and one for calories, with a dashed goal line. These are
+hand-rolled SVG (`src/components/WaterChart.jsx`), not a charting
+library, so there's no new npm dependency to install.
 
-### A. Create a OneSignal app (free)
+## Admin calendar JPEG export
 
-1. Go to https://onesignal.com → sign up → **New App/Website**
-2. Platform: **Web Push** → Integration: **Typescript/Javascript (Custom Code)**
-3. Site name: anything. Site URL: your deployed Vercel URL (you can
-   update this later once deployed)
-4. Finish setup, then go to **Settings → Keys & IDs**. Copy:
-   - **OneSignal App ID**
-   - **REST API Key**
+From the admin **Overview** tab, tap the 📅 button on any user to open
+a month picker. It draws a calendar grid on an HTML canvas — 💧 plus
+that day's water-break count, 🔥 plus that day's total calories — and
+lets you preview it before downloading it as a JPEG
+(`src/components/CalendarExport.jsx`). No server round-trip beyond
+the normal Supabase queries; the image is generated entirely in the
+browser.
 
-### B. Add the App ID to the frontend
+## Real push notifications (background, even when the app is closed)
 
-In your local `.env`:
-```
-VITE_ONESIGNAL_APP_ID=paste-your-app-id-here
-```
-Add the same variable in **Vercel → Project Settings → Environment
-Variables**, then redeploy (Vercel → Deployments → ⋯ → Redeploy) so the
-live site picks it up.
+While the app/PWA is open or backgrounded, `useReminders.js` polls
+every 20s and fires a local notification when a slot goes overdue —
+that part doesn't need any setup. But a closed app can't run
+JavaScript, so that local check alone can't wake it back up. Real
+background push needs a server to send the notification *to* the
+closed app, which is what this adds:
 
-### C. Get your Supabase service role key
+- **[OneSignal](https://onesignal.com)** (free tier, no card
+  required) handles the actual push delivery and device subscriptions
+  — no server code needed on your side for that part.
+- A small **Node script** (`scripts/send-reminders.mjs`) checks every
+  user's own goal settings (start hour, end hour, reminders/day —
+  same ones they set in Profile) and, for anyone with a due, unlogged
+  slot, asks OneSignal to push them a notification.
+- A **GitHub Actions workflow** (`.github/workflows/reminders.yml`)
+  runs that script every 15 minutes for free — no separate server or
+  cron host needed.
 
-This is different from the anon key — it can bypass Row Level Security,
-so it's only ever used server-side, never in the frontend `.env`.
+Setup, one time:
 
-Supabase → **Settings → API Keys** → copy the **`service_role`** key
-(under "Legacy API Keys" if your project shows that tab, otherwise the
-**secret key**).
+1. **Create a free OneSignal app:** onesignal.com → New App → choose
+   "Web Push" as the platform. Fill in your site's URL (the deployed
+   one, e.g. `https://your-app.vercel.app`). You'll land on a
+   settings page with your **App ID** and, under Keys & IDs, a
+   **REST API Key**.
+2. **Frontend:** add `VITE_ONESIGNAL_APP_ID=...` to `.env` (and to
+   your host's env vars if deployed), then redeploy/rebuild. This is
+   what `index.html` uses to initialize the OneSignal SDK.
+3. **GitHub Actions secrets:** in your repo → Settings → Secrets and
+   variables → Actions, add four secrets:
+   - `SUPABASE_URL` — your project URL
+   - `SUPABASE_SERVICE_ROLE_KEY` — Project Settings → API →
+     service_role key (bypasses RLS so the script can read every
+     user's schedule and logs — keep this out of the frontend, it
+     only ever lives here as a GitHub secret)
+   - `ONESIGNAL_APP_ID` — same value as `VITE_ONESIGNAL_APP_ID`
+   - `ONESIGNAL_REST_API_KEY` — from OneSignal's Keys & IDs page
+4. **That's it** — the workflow runs automatically every 15 minutes
+   once it's on GitHub's default branch. You can also trigger it by
+   hand from the repo's Actions tab (`workflow_dispatch`) to test it
+   right away instead of waiting.
+5. **Turn it on per user:** in the app, Profile → "Push
+   notifications" → Enable. This is a separate, explicit step from
+   just being logged in — the app links your OneSignal subscription
+   to your account on login (`App.jsx`), but doesn't prompt for
+   notification permission until you actually opt in here.
 
-### D. Add secrets to your GitHub repo
+Each user's local timezone (`profiles.timezone`, an IANA name like
+`Asia/Kolkata`, defaulting to that) is what the script uses to work
+out when their slots are actually due — there's no UI for changing it
+yet, so update it directly in the `profiles` table via the SQL editor
+if a user is somewhere else.
 
-Your repo → **Settings → Secrets and variables → Actions → New
-repository secret**. Add each of these:
-
-| Secret name | Value |
-|---|---|
-| `SUPABASE_URL` | same as `VITE_SUPABASE_URL` |
-| `SUPABASE_SERVICE_ROLE_KEY` | the `service_role` key from step C |
-| `ONESIGNAL_APP_ID` | same as `VITE_ONESIGNAL_APP_ID` |
-| `ONESIGNAL_REST_API_KEY` | the REST API Key from step A |
-
-### E. That's it — the workflow is already in the repo
-
-`.github/workflows/reminders.yml` runs `scripts/send-reminders.mjs`
-every hour automatically, for free, as long as the repo exists on
-GitHub (no server for you to host or pay for). It:
-- Checks the current hour against the schedule (`SCHEDULE_HOURS` in
-  the script, same hours as `DEFAULT_HOURS` in `Dashboard.jsx` —
-  keep them in sync if you change one)
-- Looks up who hasn't logged that slot yet in Supabase
-- Sends them a push via OneSignal's API, targeted by their user ID
-
-You can test it immediately without waiting for the clock: go to your
-repo's **Actions** tab → **Hourly water reminders** → **Run workflow**.
-Check the run's logs to see who it would've messaged.
-
-**Notes:**
-- GitHub's free cron isn't millisecond-precise — it can run a few
-  minutes late under load. Fine for an hourly reminder.
-- The script assumes users are in the `Asia/Kolkata` timezone
-  (`TIMEZONE` constant at the top of `scripts/send-reminders.mjs`) —
-  change it if that's not right for your users.
-- A user only starts receiving push notifications after they've opened
-  the deployed app at least once and accepted the browser's
-  notification permission prompt (this happens automatically on login
-  now — see `App.jsx`).
-
-The old in-app reminder (`useReminders.js`) still runs too — it's a
-harmless, redundant backup for while the app happens to be open.
-
-## Two other things worth knowing
-
-**"Confirm email" toggle** — Supabase → **Authentication → Providers →
-Email** → toggle off **Confirm email**, then Save. (Some project
-versions show this under **Authentication → Settings** instead — same
-setting, different location depending on your dashboard version.) With
-it off, `signUp()` logs the user in immediately instead of waiting on a
-confirmation email.
-
-**Being asked to log in again after reopening the app** — this build
-now explicitly configures Supabase to persist your session in
-`localStorage` (see `src/supabaseClient.js`), which should keep you
-logged in indefinitely. If it still happens after redeploying:
-- Make sure you're always opening the app from the same installed
-  home-screen icon, not sometimes from a plain browser tab — on iOS
-  those can be treated as separate storage.
-- Avoid private/incognito browsing, which never persists storage.
-- iOS Safari can clear site data for installed PWAs that go
-  completely unopened for roughly a week — unavoidable at the
-  platform level, not something the app's code controls.
+**Limitations to know about:**
+- iOS requires the site to be installed as a home-screen PWA before
+  push permission can even be requested — a plain Safari tab can't do
+  background push at all. Android Chrome works from either a normal
+  tab or an installed PWA.
+- GitHub Actions' scheduled workflows are "best effort" — under
+  load, a run can be delayed by several minutes past its scheduled
+  time (GitHub's own documentation notes this). For a personal
+  water-reminder app that's a non-issue; if it ever matters, the
+  Supabase-edge-function + pg_cron approach (an earlier version of
+  this file used it) runs on a tighter, dedicated schedule instead —
+  ask if you'd rather switch back to that.
 
 ## Verification is manual by design
 
@@ -197,30 +194,41 @@ that can be layered on without changing this core flow.
 
 ## Calorie tracking
 
-Simple manual log for now — quick-add buttons (100/250/400/600 kcal)
-plus a custom amount field, with a daily total against a 2000 kcal
-default goal (change `goal` prop on `<CalorieTracker />` in
-`Dashboard.jsx`).
+Simple manual log — quick-add buttons (100/250/400/600 kcal) plus a
+custom amount field or the Indian-food search, with a daily total
+against each user's own calorie goal (set from Profile → "Your goal",
+defaults to 2000 kcal).
 
 ## Project structure
 
 ```
 src/
   components/
-    WaterTank.jsx        the animated fill/wave progress visual
+    WaterTank.jsx         the animated fill/wave progress visual
     TrackWaterModal.jsx   camera capture + upload flow
     CalorieTracker.jsx    daily calorie log widget
+    WaterChart.jsx         dependency-free SVG bar chart (weekly/monthly)
+    CalendarExport.jsx     admin canvas -> JPEG calendar export
     Dashboard.jsx          main screen for a regular user
-    Profile.jsx             avatar/name, streak, 14-day history
+    Profile.jsx             avatar/name, streak, goal settings, charts, push toggle
     Avatar.jsx               photo-or-initials avatar, shared
-    AdminPanel.jsx           Overview (per-user stats) + Clips (review), role = admin
+    AdminPanel.jsx           Overview (per-user stats + export) + Clips (review), role = admin
     Login.jsx               email/password auth
-  useReminders.js          hourly notification polling
+  lib/
+    date.js                 local-time date helpers
+    schedule.js              builds a day's slots from a user's goal settings
+    oneSignalPush.js         OneSignal subscribe/unsubscribe helpers
+    indianFoodDb.js           calorie lookup data
+  useReminders.js          in-app (foreground/backgrounded) notification polling
   supabaseClient.js
 supabase/
-  schema.sql                run once in Supabase's SQL editor
-  migration_02_profile.sql  run second — adds name/avatar + avatars bucket
-public/manifest.json, sw.js  PWA install + notification plumbing
+  schema.sql                          run once in Supabase's SQL editor
+  migration_02_profile.sql            adds name/avatar + avatars bucket
+  migration_03_food_and_admin_delete.sql
+  migration_04_goals.sql              adds editable per-user water/calorie goals
+scripts/send-reminders.mjs   checks due slots per user, sends via OneSignal's REST API
+.github/workflows/reminders.yml   runs that script every 15 min via GitHub Actions
+public/manifest.json, sw.js  PWA install + local reminders + OneSignal's worker
 ```
 
 ## Design
@@ -236,13 +244,28 @@ live in `tailwind.config.js` if you want to nudge the palette.
 
 Tap the avatar in the top-right of the dashboard. Users can upload a
 photo (falls back to colored initials if they don't), set a display
-name, and see a streak counter plus their last 14 days of water +
-calorie activity.
+name, and see a streak counter. Below that: an editable water/calorie
+goal form, a push-notification toggle, and a History section with
+List/Weekly/Monthly views of their water + calorie activity.
 
 ## Admin panel
 
-Two tabs now:
+Two tabs:
 - **Overview** — every tracked user with today's water count and
-  calorie total at a glance.
+  calorie total at a glance, plus a 📅 button to export that user's
+  monthly calendar as a JPEG.
 - **Clips** — the original clip-by-clip video review, with a badge
   showing how many are still unreviewed.
+
+## Cost
+
+Everything here runs on free tiers: Supabase's free project tier
+(database, auth, storage), a free static host (Vercel/Netlify),
+OneSignal's free plan (covers push notifications for a small number
+of users comfortably), and GitHub Actions' free minutes for public
+(or low-usage private) repos to run the reminder cron. No new npm
+packages were added for the charts or the calendar export — both are
+hand-rolled (SVG and Canvas respectively) to avoid extra dependencies.
+The only things worth watching as usage grows are Supabase's free-tier
+storage/bandwidth caps for the video clips, and OneSignal's free-tier
+subscriber limit if this ever goes beyond a handful of people.

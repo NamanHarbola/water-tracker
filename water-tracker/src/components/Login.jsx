@@ -37,19 +37,22 @@ export default function Login() {
         <form onSubmit={submit} className="bg-white rounded-blob p-6 shadow-sm border border-deep/5 space-y-4">
           <input
             type="email"
+            inputMode="email"
+            autoComplete="email"
             required
             placeholder="Email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="w-full px-4 py-3 rounded-xl border border-deep/10 focus:border-splash outline-none text-sm"
+            className="w-full px-4 py-3 rounded-xl border border-deep/10 focus:border-splash outline-none text-base"
           />
           <input
             type="password"
+            autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
             required
             placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full px-4 py-3 rounded-xl border border-deep/10 focus:border-splash outline-none text-sm"
+            className="w-full px-4 py-3 rounded-xl border border-deep/10 focus:border-splash outline-none text-base"
           />
           {error && <p className="text-sm text-red-500">{error}</p>}
           <button

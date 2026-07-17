@@ -30,18 +30,19 @@ export default function App() {
     return () => sub.subscription.unsubscribe()
   }, [])
 
+  // Ties this browser's OneSignal subscription to the Supabase user id, so
+  // scripts/send-reminders.mjs can target the right person by
+  // include_external_user_ids. Does NOT request notification permission —
+  // that's a separate, explicit opt-in from Profile → "Push notifications"
+  // (see src/lib/oneSignalPush.js), so people aren't prompted on login.
   useEffect(() => {
     if (!session) return
     window.OneSignalDeferred = window.OneSignalDeferred || []
     window.OneSignalDeferred.push(async (OneSignal) => {
       try {
         await OneSignal.login(session.user.id)
-        const permission = OneSignal.Notifications.permission
-        if (permission !== true) {
-          await OneSignal.Notifications.requestPermission()
-        }
       } catch (err) {
-        console.warn('OneSignal setup skipped:', err)
+        console.warn('OneSignal login skipped:', err)
       }
     })
   }, [session])

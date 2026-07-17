@@ -1,65 +1,48 @@
-// Runs hourly (see .github/workflows/reminders.yml). For the current
-// scheduled slot, finds users who haven't logged it yet and sends
-// them a real push notification via OneSignal — this fires even if
-// their phone/app is fully closed, unlike the in-app reminder.
+// Runs every 15 minutes (see .github/workflows/reminders.yml). For every
+// tracked user, works out — in THEIR OWN timezone and using THEIR OWN
+// goal settings (start hour / end hour / reminders-per-day, set from
+// Profile → "Your goal") — whether a slot is due right now and hasn't
+// been logged yet, and if so sends them a real push via OneSignal. This
+// mirrors src/lib/schedule.js so the reminders always match what's shown
+// on the Dashboard.
 
 import { createClient } from '@supabase/supabase-js'
 
-const SCHEDULE_HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
-
-// The app's slot IDs are built from the browser's local wall-clock hour.
-// Assumes your users are in India (IST) — change this if not.
-const TIMEZONE = 'Asia/Kolkata'
-
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
 
-function localHour(date) {
-  return Number(
-    new Intl.DateTimeFormat('en-GB', {
-      timeZone: TIMEZONE,
-      hour: 'numeric',
-      hourCycle: 'h23'
-    }).format(date)
-  )
+// Mirrors src/lib/schedule.js's buildWaterSlots — kept in sync manually
+// since this runs in plain Node, not the Vite bundle.
+function buildWaterSlots(startHour, endHour, slotCount) {
+  const start = Math.min(startHour, endHour)
+  const end = Math.max(startHour, endHour)
+  const spanMinutes = (end - start) * 60
+  const count = Math.min(48, Math.max(1, slotCount))
+  const slots = []
+  for (let i = 0; i < count; i++) {
+    const raw = count === 1 ? 0 : (spanMinutes * i) / (count - 1)
+    const offset = Math.round(raw / 15) * 15
+    slots.push({ hour: start + Math.floor(offset / 60), minute: offset % 60 })
+  }
+  return slots
 }
 
-async function main() {
+function localNow(timeZone) {
   const now = new Date()
-  const hour = localHour(now)
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })
+  const parts = Object.fromEntries(fmt.formatToParts(now).map((p) => [p.type, p.value]))
+  const hour = parts.hour === '24' ? 0 : Number(parts.hour)
+  return { dateKey: `${parts.year}-${parts.month}-${parts.day}`, hour, minute: Number(parts.minute) }
+}
 
-  if (!SCHEDULE_HOURS.includes(hour)) {
-    console.log(`Hour ${hour} (${TIMEZONE}) is outside the schedule — nothing to send.`)
-    return
-  }
-
-  // Matches todayKey() in the frontend (UTC date string).
-  const date = now.toISOString().slice(0, 10)
-  const slotId = `${date}-${hour}`
-
-  const { data: users, error: userErr } = await supabase
-    .from('profiles')
-    .select('id')
-    .eq('role', 'user')
-  if (userErr) throw userErr
-  if (!users || users.length === 0) {
-    console.log('No tracked users yet.')
-    return
-  }
-
-  const { data: doneLogs, error: logErr } = await supabase
-    .from('logs')
-    .select('user_id')
-    .eq('slot_id', slotId)
-  if (logErr) throw logErr
-
-  const doneIds = new Set((doneLogs || []).map((l) => l.user_id))
-  const pending = users.map((u) => u.id).filter((id) => !doneIds.has(id))
-
-  if (pending.length === 0) {
-    console.log(`Slot ${slotId}: everyone already logged it.`)
-    return
-  }
-
+async function sendPush(userId, label) {
   const res = await fetch('https://api.onesignal.com/notifications', {
     method: 'POST',
     headers: {
@@ -68,19 +51,63 @@ async function main() {
     },
     body: JSON.stringify({
       app_id: process.env.ONESIGNAL_APP_ID,
-      include_external_user_ids: pending,
+      include_external_user_ids: [userId],
       channel_for_external_user_ids: 'push',
-      headings: { en: 'Time to drink water 💧' },
-      contents: { en: 'Tap to log your break before the next slot.' }
+      headings: { en: label },
+      contents: { en: "Tap to log it before your next slot." }
     })
   })
-
   const json = await res.json()
-  if (!res.ok) {
-    console.error('OneSignal error:', json)
-    process.exit(1)
+  if (!res.ok) throw new Error(JSON.stringify(json))
+  return json
+}
+
+async function main() {
+  const { data: profiles, error } = await supabase
+    .from('profiles')
+    .select('id, water_start_hour, water_end_hour, water_slot_count, timezone')
+    .eq('role', 'user')
+  if (error) throw error
+  if (!profiles?.length) {
+    console.log('No tracked users yet.')
+    return
   }
-  console.log(`Slot ${slotId}: reminder sent to ${pending.length} user(s).`, json)
+
+  let sent = 0
+  for (const profile of profiles) {
+    const timeZone = profile.timezone || 'Asia/Kolkata'
+    const { dateKey, hour, minute } = localNow(timeZone)
+    const slots = buildWaterSlots(profile.water_start_hour ?? 9, profile.water_end_hour ?? 21, profile.water_slot_count ?? 13)
+
+    const nowMinutes = hour * 60 + minute
+    const dueSlot = slots.find((s) => {
+      const slotMinutes = s.hour * 60 + s.minute
+      // Within 15 min after the slot — matches this workflow's cron cadence.
+      return nowMinutes >= slotMinutes && nowMinutes - slotMinutes < 15
+    })
+    if (!dueSlot) continue
+
+    const slotId = `${dateKey}-${String(dueSlot.hour).padStart(2, '0')}${String(dueSlot.minute).padStart(2, '0')}`
+
+    const { data: existingLog } = await supabase
+      .from('logs')
+      .select('id')
+      .eq('user_id', profile.id)
+      .eq('slot_id', slotId)
+      .maybeSingle()
+    if (existingLog) continue
+
+    const label = `${dueSlot.hour % 12 || 12}${dueSlot.hour < 12 ? 'am' : 'pm'} water break`
+    try {
+      await sendPush(profile.id, label)
+      sent++
+      console.log(`Sent to ${profile.id} for slot ${slotId}`)
+    } catch (err) {
+      console.error(`Failed for ${profile.id}:`, err.message)
+    }
+  }
+
+  console.log(`Done. Sent ${sent} reminder(s).`)
 }
 
 main().catch((err) => {
